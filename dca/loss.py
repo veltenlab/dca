@@ -69,7 +69,7 @@ class NB(object):
         self.masking = masking
         self.theta = theta
 
-    def loss(self, y_true, y_pred, mean=True):
+    def loss(self, y_true, y_pred, mean=True, theta=None):
         scale_factor = self.scale_factor
         eps = self.eps
 
@@ -82,16 +82,16 @@ class NB(object):
                 y_true = _nan2zero(y_true)
 
             # Clip theta
-            theta = tf.minimum(self.theta, 1e6)
+            theta = tf.minimum(theta, 1e6)
 
             t1 = tf.math.lgamma(theta+eps) + tf.math.lgamma(y_true+1.0) - tf.math.lgamma(y_true+theta+eps)
             t2 = (theta+y_true) * tf.math.log(1.0 + (y_pred/(theta+eps))) + (y_true * (tf.math.log(theta+eps) - tf.math.log(y_pred+eps)))
 
             if self.debug:
                 assert_ops = [
-                        tf.verify_tensor_all_finite(y_pred, 'y_pred has inf/nans'),
-                        tf.verify_tensor_all_finite(t1, 't1 has inf/nans'),
-                        tf.verify_tensor_all_finite(t2, 't2 has inf/nans')]
+                        tf.compat.v1.verify_tensor_all_finite(y_pred, 'y_pred has inf/nans'),
+                        tf.compat.v1.verify_tensor_all_finite(t1, 't1 has inf/nans'),
+                        tf.compat.v1.verify_tensor_all_finite(t2, 't2 has inf/nans')]
 
                 tf.summary.histogram('t1', t1)
                 tf.summary.histogram('t2', t2)
@@ -154,3 +154,38 @@ class ZINB(NB):
                 tf.summary.histogram('ridge', ridge)
 
         return result
+
+class CombNBLoss(NB):
+    def __init__(self, pi, alpha, theta1, theta2, scope='combnb_loss/', **kwargs):
+        super().__init__(scope=scope, **kwargs)
+        self.pi = pi
+        self.alpha = alpha
+        self.theta1 = theta1
+        self.theta2 = theta2
+    
+    def loss(self, y_true, y_pred):
+        scale_factor = self.scale_factor
+        eps = self.eps
+
+        with tf.name_scope(self.scope):
+            # reuse existing NB neg.log.lik.
+            # mean is always False here, because everything is calculated
+            # element-wise. we take the mean only in the end
+            mean1 = y_pred
+            mean2 = mean1*self.alpha
+            if self.debug:
+                tf.summary.histogram('mean1', mean1)
+#                tf.summary.histogram('mean2', mean2)
+
+            nb_case1 = super().loss(y_true, mean1, mean=False, theta=self.theta1)
+            nb_case2 = super().loss(y_true, mean2, mean=False, theta=self.theta2)
+
+            result = tf.math.reduce_logsumexp(tf.stack((nb_case1-self.pi,nb_case2)),axis=0)
+            splus = tf.keras.backend.softplus(self.pi)
+            result = result + splus
+            result = _reduce_mean(result)
+            result = _nan2inf(result)
+
+
+        return result
+
