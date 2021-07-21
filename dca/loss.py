@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-from keras import backend as K
+from tensorflow.keras import backend as K
 
 
 def _nan2zero(x):
@@ -69,7 +69,7 @@ class NB(object):
         self.masking = masking
         self.theta = theta
 
-    def loss(self, y_true, y_pred, mean=True, theta=None):
+    def loss(self, y_true, y_pred, mean=True, theta=1e6):
         scale_factor = self.scale_factor
         eps = self.eps
 
@@ -181,6 +181,42 @@ class CombNBLoss(NB):
             nb_case2 = super().loss(y_true, mean2, mean=False, theta=self.theta2)
 
             result = tf.math.reduce_logsumexp(tf.stack((nb_case1-self.pi,nb_case2)),axis=0)
+            splus = tf.keras.backend.softplus(self.pi)
+            result = result + splus
+            result = _reduce_mean(result)
+            result = _nan2inf(result)
+
+
+        return result
+
+class CombNBPoissonLoss(NB):
+    def __init__(self, pi, lambda_poisson, scope='combnbpoisson_loss/', **kwargs):
+        super().__init__(scope=scope, **kwargs)
+        self.pi = pi
+        self.lambda_poisson = lambda_poisson
+
+    
+    def loss(self, y_true, y_pred):
+        scale_factor = self.scale_factor
+        eps = self.eps
+
+        with tf.name_scope(self.scope):
+            # reuse existing NB neg.log.lik.
+            # mean is always False here, because everything is calculated
+            # element-wise. we take the mean only in the end
+            mean1 = y_pred
+            if self.debug:
+                tf.summary.histogram('mean1', mean1)
+#                tf.summary.histogram('mean2', mean2)
+
+            nb_case = super().loss(y_true, mean1, mean=False, theta=self.theta)
+#            non_nan_y = _nan2zero(y_true)
+#            leni = _nelem(y_true)
+#            poiss_case = self.lambda_poisson - non_nan_y*tf.math.log(self.lambda_poisson+eps) + tf.math.lgamma(non_nan_y + 1.0)
+#            poiss_case = tf.math.log(tf.divide(poiss_case, leni))
+            poiss_case = tf.math.log(poisson_loss(y_true, self.lambda_poisson))
+
+            result = tf.math.reduce_logsumexp(tf.stack((nb_case,poiss_case-self.pi)),axis=0)
             splus = tf.keras.backend.softplus(self.pi)
             result = result + splus
             result = _reduce_mean(result)

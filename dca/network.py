@@ -26,11 +26,11 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.regularizers import l1_l2
 from keras.objectives import mean_squared_error
 from tensorflow.keras.initializers import Constant
-from keras import backend as K
+from tensorflow.keras import backend as K
 
 import tensorflow as tf
 
-from .loss import poisson_loss, NB, ZINB, CombNBLoss
+from .loss import poisson_loss, NB, ZINB, CombNBLoss, CombNBPoissonLoss
 from .layers import ConstantDispersionLayer, SliceLayer, ColwiseMultLayer, ElementwiseDense
 from .io import write_text_matrix
 
@@ -845,12 +845,153 @@ class CombNBAutoencoder(Autoencoder):
                               os.path.join(file_path, 'mean.tsv'),
                               colnames=colnames, transpose=True)
 
+class CombNBAutoencoderConstantDispersion(CombNBAutoencoder):
 
+    def build_output(self):
+        pi = Dense(self.output_size, activation='sigmoid', kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='pi')(self.decoder_output)
+
+        mean1 = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='mean1')(self.decoder_output)
+        disp1 = ConstantDispersionLayer(name='dispersion1')
+        mean1 = disp1(mean1)
+        alpha = Dense(self.output_size, activation='softmax', kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='alpha')(self.decoder_output)
+        mean2 = mean1*alpha
+        disp2 = ConstantDispersionLayer(name='dispersion2')
+        mean2 = disp2(mean2)
+        output = ColwiseMultLayer([mean1, self.sf_layer])
+        output = SliceLayer(0, name='slice')([output, pi, alpha])
+
+        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1.theta_exp, theta2=disp2.theta_exp, debug=self.debug)
+        self.loss = combnb.loss
+        self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
+        self.extra_models['dispersion1'] = lambda :K.function([], [combnb.theta1])([])[0].squeeze()
+        self.extra_models['dispersion2'] = lambda :K.function([], [combnb.theta2])([])[0].squeeze()
+        self.extra_models['mean1_norm'] = Model(inputs=self.input_layer, outputs=mean1)
+        self.extra_models['alpha'] = Model(inputs=self.input_layer, outputs=alpha)
+        self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
+
+        self.model = Model(inputs=[self.input_layer, self.sf_layer], outputs=output)
+
+        self.encoder = self.get_encoder()
+
+    def predict(self, adata, mode='denoise', return_info=True, copy=False, colnames=None):
+
+        adata = adata.copy() if copy else adata
+
+        if return_info:
+            adata.var['meth_dispersion1'] = self.extra_models['dispersion1']()
+            adata.var['meth_dispersion2'] = self.extra_models['dispersion2']()
+            adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
+            adata.obsm['alpha']    = self.extra_models['alpha'].predict(adata.X)
+            adata.obsm['mean1_norm']    = self.extra_models['mean1_norm'].predict(adata.X)
+
+        # warning! this may overwrite adata.X
+        #super().predict(adata, mode, return_info, copy=False)
+        return adata if copy else None
+
+class CombNBPoissonAutoencoder(Autoencoder):
+
+    def build_output(self):
+        pi = Dense(self.output_size, activation='sigmoid', kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='pi')(self.decoder_output)
+
+        mean_nb = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='mean_nb')(self.decoder_output)
+        disp_nb = Dense(self.output_size, activation=DispAct,
+                           kernel_initializer=self.init,
+                           kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                           name='dispersion_nb')(self.decoder_output)
+
+        lambda_poisson = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='lambda_poisson')(self.decoder_output)
+        output = ColwiseMultLayer([mean_nb, self.sf_layer])
+        output = SliceLayer(0, name='slice')([output, pi, lambda_poisson])
+
+        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug)
+        self.loss = combnbpoisson.loss
+        self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
+        self.extra_models['dispersion_nb'] = Model(inputs=self.input_layer, outputs=disp_nb)
+        self.extra_models['mean_nb_norm'] = Model(inputs=self.input_layer, outputs=mean_nb)
+        self.extra_models['lambda_poisson'] = Model(inputs=self.input_layer, outputs=lambda_poisson)
+        self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
+
+        self.model = Model(inputs=[self.input_layer, self.sf_layer], outputs=output)
+
+        self.encoder = self.get_encoder()
+
+    def predict(self, adata, mode='denoise', return_info=True, copy=False, colnames=None):
+
+        adata = adata.copy() if copy else adata
+
+        if return_info:
+            adata.obsm['X_meth_dispersion_nb'] = self.extra_models['dispersion_nb'].predict(adata.X)
+            adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
+            adata.obsm['lambda_poisson']    = self.extra_models['lambda_poisson'].predict(adata.X)
+            adata.obsm['mean_nb_norm']    = self.extra_models['mean_nb_norm'].predict(adata.X)
+
+        # warning! this may overwrite adata.X
+        #super().predict(adata, mode, return_info, copy=False)
+        return adata if copy else None
+
+class CombNBPoissonAutoencoderConstantDispersion(Autoencoder):
+
+    def build_output(self):
+        pi = Dense(self.output_size, activation='sigmoid', kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='pi')(self.decoder_output)
+
+        mean_nb = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='mean_nb')(self.decoder_output)
+        disp_nb = ConstantDispersionLayer(name='dispersion_nb')
+        mean_nb = disp_nb(mean_nb)
+        lambda_poisson = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='lambda_poisson')(self.decoder_output)
+        output = ColwiseMultLayer([mean_nb, self.sf_layer])
+        output = SliceLayer(0, name='slice')([output, pi, lambda_poisson])
+
+        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb.theta_exp, debug=self.debug)
+        self.loss = combnbpoisson.loss
+        self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
+        self.extra_models['dispersion_nb'] = lambda :K.function([], [combnbpoisson.theta])([])[0].squeeze()
+        self.extra_models['mean_nb_norm'] = Model(inputs=self.input_layer, outputs=mean_nb)
+        self.extra_models['lambda_poisson'] = Model(inputs=self.input_layer, outputs=lambda_poisson)
+        self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
+
+        self.model = Model(inputs=[self.input_layer, self.sf_layer], outputs=output)
+
+        self.encoder = self.get_encoder()
+
+    def predict(self, adata, mode='denoise', return_info=True, copy=False, colnames=None):
+
+        adata = adata.copy() if copy else adata
+
+        if return_info:
+            adata.var['meth_dispersion_nb'] = self.extra_models['dispersion_nb']()
+            adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
+            adata.obsm['lambda_poisson']    = self.extra_models['lambda_poisson'].predict(adata.X)
+            adata.obsm['mean_nb_norm']    = self.extra_models['mean_nb_norm'].predict(adata.X)
+
+        # warning! this may overwrite adata.X
+        #super().predict(adata, mode, return_info, copy=False)
+        return adata if copy else None
 
 AE_types = {'normal': Autoencoder, 'poisson': PoissonAutoencoder,
             'nb': NBConstantDispAutoencoder, 'nb-conddisp': NBAutoencoder,
             'nb-shared': NBSharedAutoencoder, 'nb-fork': NBForkAutoencoder,
             'zinb': ZINBConstantDispAutoencoder, 'zinb-conddisp': ZINBAutoencoder,
             'zinb-shared': ZINBSharedAutoencoder, 'zinb-fork': ZINBForkAutoencoder,
-            'zinb-elempi': ZINBAutoencoderElemPi, 'meth-encoder': CombNBAutoencoder}
+            'zinb-elempi': ZINBAutoencoderElemPi, 'meth-encoder': CombNBAutoencoder,
+            'meth-encoder-constant': CombNBAutoencoderConstantDispersion,
+            'meth-encoder-poisson': CombNBPoissonAutoencoder,
+            'meth-encoder-poisson-constant': CombNBPoissonAutoencoderConstantDispersion}
 
