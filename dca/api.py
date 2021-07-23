@@ -40,6 +40,7 @@ def dca(adata,
         training_kwds={},
         return_model=False,
         return_info=False,
+        return_bottleneck=False,
         copy=False,
         check_counts=True,
         ):
@@ -204,6 +205,9 @@ def dca(adata,
 
     if return_info:
         adata.uns['dca_loss_history'] = hist.history
+
+    if return_bottleneck:
+        adata.obsm['X_bottleneck'] = net.get_encoder().predict([adata.X, adata.obs.size_factors])
 
     if return_model:
         return (adata, net) if copy else net

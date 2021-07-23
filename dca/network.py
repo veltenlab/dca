@@ -864,7 +864,7 @@ class CombNBAutoencoderConstantDispersion(CombNBAutoencoder):
         disp2 = ConstantDispersionLayer(name='dispersion2')
         mean2 = disp2(mean2)
         output = ColwiseMultLayer([mean1, self.sf_layer])
-        output = SliceLayer(0, name='slice')([output, pi, alpha])
+        output = SliceLayer(0, name='slice')([output, pi, alpha, mean2])
 
         combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1.theta_exp, theta2=disp2.theta_exp, debug=self.debug)
         self.loss = combnb.loss
@@ -913,7 +913,7 @@ class CombNBPoissonAutoencoder(Autoencoder):
                        kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
                        name='lambda_poisson')(self.decoder_output)
         output = ColwiseMultLayer([mean_nb, self.sf_layer])
-        output = SliceLayer(0, name='slice')([output, pi, lambda_poisson])
+        output = SliceLayer(0, name='slice')([output, pi, lambda_poisson, disp_nb])
 
         combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug)
         self.loss = combnbpoisson.loss
