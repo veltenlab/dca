@@ -189,6 +189,39 @@ class CombNBLoss(NB):
 
         return result
 
+class CombNBLossSimple(NB):
+    def __init__(self, mean1, mean2, theta1, theta2, scope='combnb_loss/', **kwargs):
+        super().__init__(scope=scope, **kwargs)
+        self.mean1 = mean1
+        self.mean2 = mean2
+        self.theta1 = theta1
+        self.theta2 = theta2
+    
+    def loss(self, y_true, y_pred):
+        scale_factor = self.scale_factor
+        eps = self.eps
+
+        with tf.name_scope(self.scope):
+            # reuse existing NB neg.log.lik.
+            # mean is always False here, because everything is calculated
+            # element-wise. we take the mean only in the end
+            pi = y_pred
+#            if self.debug:
+#                tf.summary.histogram('mean1', mean1)
+#                tf.summary.histogram('mean2', mean2)
+
+            nb_case1 = super().loss(y_true, self.mean1, mean=False, theta=self.theta1)
+            nb_case2 = super().loss(y_true, self.mean2, mean=False, theta=self.theta2)
+
+            result = tf.math.reduce_logsumexp(tf.stack((nb_case1-pi,nb_case2)),axis=0)
+            splus = tf.keras.backend.softplus(pi)
+            result = result + splus
+            result = _reduce_mean(result)
+            result = _nan2inf(result)
+
+
+        return result
+
 class CombNBPoissonLoss(NB):
     def __init__(self, pi, lambda_poisson, scope='combnbpoisson_loss/', **kwargs):
         super().__init__(scope=scope, **kwargs)

@@ -30,8 +30,8 @@ from tensorflow.keras import backend as K
 
 import tensorflow as tf
 
-from .loss import poisson_loss, NB, ZINB, CombNBLoss, CombNBPoissonLoss
-from .layers import ConstantDispersionLayer, SliceLayer, ColwiseMultLayer, ElementwiseDense
+from .loss import poisson_loss, NB, ZINB, CombNBLoss, CombNBPoissonLoss, CombNBLossSimple
+from .layers import ConstantDispersionLayer, SliceLayer, ColwiseMultLayer, ElementwiseDense, Linear
 from .io import write_text_matrix
 
 
@@ -786,7 +786,7 @@ class CombNBAutoencoder(Autoencoder):
         output = ColwiseMultLayer([mean1, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, disp1, disp2, alpha])
 
-        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1, theta2=disp2, debug=self.debug)
+        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1, theta2=disp2, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnb.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion1'] = Model(inputs=self.input_layer, outputs=disp1)
@@ -866,7 +866,7 @@ class CombNBAutoencoderConstantDispersion(CombNBAutoencoder):
         output = ColwiseMultLayer([mean1, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, alpha, mean2])
 
-        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1.theta_exp, theta2=disp2.theta_exp, debug=self.debug)
+        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1.theta_exp, theta2=disp2.theta_exp, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnb.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion1'] = lambda :K.function([], [combnb.theta1])([])[0].squeeze()
@@ -915,7 +915,7 @@ class CombNBPoissonAutoencoder(Autoencoder):
         output = ColwiseMultLayer([mean_nb, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, lambda_poisson, disp_nb])
 
-        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug)
+        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnbpoisson.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion_nb'] = Model(inputs=self.input_layer, outputs=disp_nb)
@@ -959,7 +959,7 @@ class CombNBPoissonAutoencoderConstantDispersion(Autoencoder):
         output = ColwiseMultLayer([mean_nb, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, lambda_poisson])
 
-        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb.theta_exp, debug=self.debug)
+        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb.theta_exp, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnbpoisson.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion_nb'] = lambda :K.function([], [combnbpoisson.theta])([])[0].squeeze()
@@ -985,6 +985,79 @@ class CombNBPoissonAutoencoderConstantDispersion(Autoencoder):
         #super().predict(adata, mode, return_info, copy=False)
         return adata if copy else None
 
+class CombNBSimpleAutoencoder(Autoencoder):
+
+    def build_output(self):
+        pi = Dense(self.output_size, activation='sigmoid', kernel_initializer=self.init,
+                       kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
+                       name='pi')(self.decoder_output)
+
+        mean1 = ConstantDispersionLayer(name='mean1')(pi)
+        mean2 = ConstantDispersionLayer(name='mean2')(pi)
+        disp1 = ConstantDispersionLayer(name='dispersion1')(mean1)
+        disp2 = ConstantDispersionLayer(name='dispersion2')(mean2)
+        output = ColwiseMultLayer([pi, self.sf_layer])
+#        output = SliceLayer(0, name='slice')([output, mean1, mean2])
+
+        combnb = CombNBLossSimple(mean1=mean1, mean2=mean2, theta1=disp1, theta2=disp2, debug=self.debug, scale_factor=self.sf_layer)
+        self.loss = combnb.loss
+        self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
+#        self.extra_models['dispersion1'] = Model(inputs=self.input_layer, outputs=disp1)
+#        self.extra_models['dispersion2'] = Model(inputs=self.input_layer, outputs=disp2)
+#        self.extra_models['mean1_norm'] = Model(inputs=self.input_layer, outputs=mean1)
+#        self.extra_models['alpha'] = Model(inputs=self.input_layer, outputs=alpha)
+        self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
+
+        self.model = Model(inputs=[self.input_layer, self.sf_layer], outputs=output)
+
+        self.encoder = self.get_encoder()
+
+    def predict(self, adata, mode='denoise', return_info=True, copy=False, colnames=None):
+
+        adata = adata.copy() if copy else adata
+
+        if return_info:
+#            adata.obsm['X_meth_dispersion1'] = self.extra_models['dispersion1'].predict(adata.X)
+#            adata.obsm['X_meth_dispersion2'] = self.extra_models['dispersion2'].predict(adata.X)
+            adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
+#            adata.obsm['alpha']    = self.extra_models['alpha'].predict(adata.X)
+#            adata.obsm['mean1_norm']    = self.extra_models['mean1_norm'].predict(adata.X)
+
+        # warning! this may overwrite adata.X
+        super().predict(adata, mode, return_info, copy=False)
+        return adata if copy else None
+
+    def write(self, adata, file_path, mode='denoise', colnames=None):
+        colnames = adata.var_names.values if colnames is None else colnames
+        rownames = adata.obs_names.values
+
+        super().write(adata, file_path, mode, colnames=colnames)
+
+#        if 'X_meth_dispersion' in adata.obsm_keys():
+#            write_text_matrix(adata.obsm['X_meth_dispersion1'],
+#                              os.path.join(file_path, 'dispersion1.tsv'),
+#                              colnames=colnames, transpose=True)
+
+#        if 'X_meth_dispersion2' in adata.obsm_keys():
+#            write_text_matrix(adata.obsm['X_meth_dispersion2'],
+#                              os.path.join(file_path, 'dispersion2.tsv'),
+#                              colnames=colnames, transpose=True)
+
+        if 'X_meth_value' in adata.obsm_keys():
+            write_text_matrix(adata.obsm['X_meth_value'],
+                              os.path.join(file_path, 'meth_value.tsv'),
+                              colnames=colnames, transpose=True)
+
+#        if 'X_alpha' in adata.obsm_keys():
+#            write_text_matrix(adata.obsm['X_alpha'],
+#                              os.path.join(file_path, 'alpha.tsv'),
+#                              colnames=colnames, transpose=True)
+
+#        if 'X_mean' in adata.obsm_keys():
+#            write_text_matrix(adata.obsm['X_mean'],
+#                              os.path.join(file_path, 'mean.tsv'),
+#                              colnames=colnames, transpose=True)
+
 AE_types = {'normal': Autoencoder, 'poisson': PoissonAutoencoder,
             'nb': NBConstantDispAutoencoder, 'nb-conddisp': NBAutoencoder,
             'nb-shared': NBSharedAutoencoder, 'nb-fork': NBForkAutoencoder,
@@ -993,5 +1066,6 @@ AE_types = {'normal': Autoencoder, 'poisson': PoissonAutoencoder,
             'zinb-elempi': ZINBAutoencoderElemPi, 'meth-encoder': CombNBAutoencoder,
             'meth-encoder-constant': CombNBAutoencoderConstantDispersion,
             'meth-encoder-poisson': CombNBPoissonAutoencoder,
-            'meth-encoder-poisson-constant': CombNBPoissonAutoencoderConstantDispersion}
+            'meth-encoder-poisson-constant': CombNBPoissonAutoencoderConstantDispersion,
+            'meth-simple-encoder': CombNBSimpleAutoencoder}
 
