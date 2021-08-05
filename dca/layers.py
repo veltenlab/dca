@@ -28,15 +28,16 @@ class ConstantDispersionLayer(Layer):
         return input_shape
 
 class Linear(Layer):
-    def __init__(self, units=0, input_dim=1, **kwargs):
+    def __init__(self, units=1, input_dim=1, constraint=None, **kwargs):
         super(Linear, self).__init__(**kwargs)
-        w_init = tf.random_normal_initializer()
+        w_init = tf.ones_initializer()
         self.w = tf.Variable(
             initial_value=w_init(shape=(input_dim, units),dtype=tf.float32),
-            trainable=True
+            trainable=True,
+            constraint=constraint
         )
-        self.w = self.w.assign(w_init(shape=(input_dim, units),dtype=tf.float32))
-#        b_init = tf.random_normal_initializer()
+#        self.w = self.w.assign(w_init(shape=(input_dim, units),dtype=tf.float32))
+#        b_init = tf.ones_initializer()
 #        self.b = tf.Variable(
 #            initial_value=b_init(shape=(units,), dtype=tf.float32), trainable=True
 #        )
