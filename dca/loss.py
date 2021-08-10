@@ -222,10 +222,11 @@ class CombNBLossSimple(NB):
 
         return result
 
-class CombNBPoissonLoss(NB):
-    def __init__(self, pi, lambda_poisson, scope='combnbpoisson_loss/', **kwargs):
+class CombNBPoissonLossExtra(NB):
+    def __init__(self, enzyme_cells, pi, lambda_poisson, scope='combnbpoisson_loss/', **kwargs):
         super().__init__(scope=scope, **kwargs)
         self.pi = pi
+        self.enzyme_cells = enzyme_cells
         self.lambda_poisson = lambda_poisson
 
     
@@ -249,9 +250,10 @@ class CombNBPoissonLoss(NB):
 #            poiss_case = tf.math.log(tf.divide(poiss_case, leni))
             poiss_case = tf.math.log(poisson_loss(y_true, self.lambda_poisson))
 
-            result = tf.math.reduce_logsumexp(tf.stack((nb_case,poiss_case-self.pi)),axis=0)
+            result = tf.math.reduce_logsumexp(tf.stack((nb_case,poiss_case-self.pi-self.enzyme_cells)),axis=0)
             splus = tf.keras.backend.softplus(self.pi)
-            result = result + splus
+            splus2 = tf.keras.backend.softplus(self.enzyme_cells)
+            result = result + splus + splus2
             result = _reduce_mean(result)
             result = _nan2inf(result)
 

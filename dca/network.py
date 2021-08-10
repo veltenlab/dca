@@ -30,7 +30,7 @@ from tensorflow.keras import backend as K
 
 import tensorflow as tf
 
-from .loss import poisson_loss, NB, ZINB, CombNBLoss, CombNBPoissonLoss, CombNBLossSimple, CombNBLossSimpleExtra
+from .loss import poisson_loss, NB, ZINB, CombNBLoss, CombNBLossSimple, CombNBLossSimpleExtra, CombNBPoissonLossExtra
 from .layers import ConstantDispersionLayer, SliceLayer, ColwiseMultLayer, ElementwiseDense, Linear
 from .io import write_text_matrix
 
@@ -956,15 +956,17 @@ class CombNBPoissonAutoencoderConstantDispersion(Autoencoder):
                        name='mean_nb')(self.decoder_output)
         disp_nb = ConstantDispersionLayer(name='dispersion_nb')
         mean_nb = disp_nb(mean_nb)
+        enzyme_cells = Linear(input_dim=self.hidden_size[2],name='enzyme_cells',activation=tf.keras.activations.sigmoid)(self.decoder_output)
         lambda_poisson = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
                        kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
                        name='lambda_poisson')(self.decoder_output)
-        output = ColwiseMultLayer([mean_nb, self.sf_layer])
+        output = ColwiseMultLayer([mean_nb, enzyme_cells, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, lambda_poisson])
 
-        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb.theta_exp, debug=self.debug, scale_factor=self.sf_layer)
+        combnbpoisson = CombNBPoissonLossExtra(enzyme_cells=enzyme_cells, pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb.theta_exp, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnbpoisson.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
+        self.extra_models['enzyme_cells'] = Model(inputs=self.input_layer, outputs=enzyme_cells)
         self.extra_models['dispersion_nb'] = lambda :K.function([], [combnbpoisson.theta])([])[0].squeeze()
         self.extra_models['mean_nb_norm'] = Model(inputs=self.input_layer, outputs=mean_nb)
         self.extra_models['lambda_poisson'] = Model(inputs=self.input_layer, outputs=lambda_poisson)
@@ -983,6 +985,7 @@ class CombNBPoissonAutoencoderConstantDispersion(Autoencoder):
             adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
             adata.obsm['lambda_poisson']    = self.extra_models['lambda_poisson'].predict(adata.X)
             adata.obsm['mean_nb_norm']    = self.extra_models['mean_nb_norm'].predict(adata.X)
+            adata.obsm['X_enzyme_activity']    = self.extra_models['enzyme_cells'].predict(adata.X)
 
         # warning! this may overwrite adata.X
         #super().predict(adata, mode, return_info, copy=False)
