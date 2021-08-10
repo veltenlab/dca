@@ -28,7 +28,7 @@ class ConstantDispersionLayer(Layer):
         return input_shape
 
 class Linear(Layer):
-    def __init__(self, units=1, input_dim=1, constraint=None, **kwargs):
+    def __init__(self, units=1, input_dim=1, constraint=None, activation=None, **kwargs):
         super(Linear, self).__init__(**kwargs)
         w_init = tf.ones_initializer()
         self.w = tf.Variable(
@@ -36,14 +36,22 @@ class Linear(Layer):
             trainable=True,
             constraint=constraint
         )
+        self.activation = activation
 #        self.w = self.w.assign(w_init(shape=(input_dim, units),dtype=tf.float32))
 #        b_init = tf.ones_initializer()
 #        self.b = tf.Variable(
 #            initial_value=b_init(shape=(units,), dtype=tf.float32), trainable=True
 #        )
 
+
     def call(self, inputs):
-        return tf.matmul(inputs, self.w)# + self.b
+        # use * instead of tf.matmul, we need broadcasting here
+        res = tf.matmul(inputs, self.w)# + self.b
+        if self.activation is not None:
+            res = self.activation(res)
+        return res
+
+
 
 class SliceLayer(Layer):
     def __init__(self, index, **kwargs):
