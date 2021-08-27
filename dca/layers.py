@@ -38,15 +38,15 @@ class Linear(Layer):
         )
         self.activation = activation
 #        self.w = self.w.assign(w_init(shape=(input_dim, units),dtype=tf.float32))
-#        b_init = tf.ones_initializer()
-#        self.b = tf.Variable(
-#            initial_value=b_init(shape=(units,), dtype=tf.float32), trainable=True
-#        )
+        b_init = tf.ones_initializer()
+        self.b = tf.Variable(
+            initial_value=b_init(shape=(units,), dtype=tf.float32), trainable=True
+        )
 
 
     def call(self, inputs):
         # use * instead of tf.matmul, we need broadcasting here
-        res = tf.matmul(inputs, self.w)# + self.b
+        res = tf.matmul(inputs, self.w) + self.b
         if self.activation is not None:
             res = self.activation(res)
         return res

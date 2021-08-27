@@ -782,17 +782,19 @@ class CombNBAutoencoder(Autoencoder):
         alpha = Dense(self.output_size, activation='softmax', kernel_initializer=self.init,
                        kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
                        name='alpha')(self.decoder_output)
+        enzyme_cells = Linear(input_dim=self.hidden_size[2],name='enzyme_cells',activation=tf.keras.activations.sigmoid)(self.decoder_output)
         mean2 = mean1*alpha
-        output = ColwiseMultLayer([mean1, self.sf_layer])
-        output = SliceLayer(0, name='slice')([output, pi, disp1, disp2, alpha])
+        output = ColwiseMultLayer([pi, enzyme_cells, self.sf_layer])
+        output = SliceLayer(0, name='slice')([output, mean1, disp1, disp2, alpha])
 
-        combnb = CombNBLoss(pi=pi, alpha=alpha, theta1=disp1, theta2=disp2, debug=self.debug, scale_factor=self.sf_layer)
+        combnb = CombNBLossSimpleExtra(enzyme_cells=enzyme_cells, mean1=mean1, mean2=mean2, theta1=disp1, theta2=disp2, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnb.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion1'] = Model(inputs=self.input_layer, outputs=disp1)
         self.extra_models['dispersion2'] = Model(inputs=self.input_layer, outputs=disp2)
         self.extra_models['mean1_norm'] = Model(inputs=self.input_layer, outputs=mean1)
         self.extra_models['alpha'] = Model(inputs=self.input_layer, outputs=alpha)
+        self.extra_models['enzyme_cells'] = Model(inputs=self.input_layer, outputs=enzyme_cells)
         self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
 
         self.model = Model(inputs=[self.input_layer, self.sf_layer], outputs=output)
@@ -809,6 +811,7 @@ class CombNBAutoencoder(Autoencoder):
             adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
             adata.obsm['alpha']    = self.extra_models['alpha'].predict(adata.X)
             adata.obsm['mean1_norm']    = self.extra_models['mean1_norm'].predict(adata.X)
+            adata.obsm['X_enzyme_activity']    = self.extra_models['enzyme_cells'].predict(adata.X)
 
         # warning! this may overwrite adata.X
         super().predict(adata, mode, return_info, copy=False)
@@ -911,17 +914,19 @@ class CombNBPoissonAutoencoder(Autoencoder):
                            kernel_initializer=self.init,
                            kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
                            name='dispersion_nb')(self.decoder_output)
-
+        #enzyme_cells = Linear(input_dim=self.hidden_size[2],name='enzyme_cells',activation=tf.keras.activations.sigmoid)(self.decoder_output)
+        enzyme_cells = Linear(input_dim=self.hidden_size[2],name='enzyme_cells',activation=tf.keras.activations.sigmoid)(self.decoder_output)
         lambda_poisson = Dense(self.output_size, activation=MeanAct, kernel_initializer=self.init,
                        kernel_regularizer=l1_l2(self.l1_coef, self.l2_coef),
                        name='lambda_poisson')(self.decoder_output)
-        output = ColwiseMultLayer([mean_nb, self.sf_layer])
+        output = ColwiseMultLayer([mean_nb, enzyme_cells, self.sf_layer])
         output = SliceLayer(0, name='slice')([output, pi, lambda_poisson, disp_nb])
 
-        combnbpoisson = CombNBPoissonLoss(pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug, scale_factor=self.sf_layer)
+        combnbpoisson = CombNBPoissonLossExtra(enzyme_cells=enzyme_cells, pi=pi, lambda_poisson=lambda_poisson, theta=disp_nb, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnbpoisson.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
         self.extra_models['dispersion_nb'] = Model(inputs=self.input_layer, outputs=disp_nb)
+        self.extra_models['enzyme_cells'] = Model(inputs=self.input_layer, outputs=enzyme_cells)
         self.extra_models['mean_nb_norm'] = Model(inputs=self.input_layer, outputs=mean_nb)
         self.extra_models['lambda_poisson'] = Model(inputs=self.input_layer, outputs=lambda_poisson)
         self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
@@ -939,6 +944,7 @@ class CombNBPoissonAutoencoder(Autoencoder):
             adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
             adata.obsm['lambda_poisson']    = self.extra_models['lambda_poisson'].predict(adata.X)
             adata.obsm['mean_nb_norm']    = self.extra_models['mean_nb_norm'].predict(adata.X)
+            adata.obsm['X_enzyme_activity']    = self.extra_models['enzyme_cells'].predict(adata.X)
 
         # warning! this may overwrite adata.X
         #super().predict(adata, mode, return_info, copy=False)
@@ -1077,21 +1083,23 @@ class CombNBExtraParameters(Autoencoder):
 
 #        alpha = Linear(input_dim=self.output_size,constraint=lambda z: tf.clip_by_value(z, 0, 1),name='alpha')(pi)
 #        mean2 = mean1*alpha
-        enzyme = Linear(input_dim=self.hidden_size[2],name='enzyme',activation=tf.keras.activations.sigmoid)(self.decoder_output)
-        disp1 = Linear(input_dim=self.output_size,name='dispersion1')(pi)
-        disp2 = Linear(input_dim=self.output_size,name='dispersion2')(pi)
-        mean1 = Linear(input_dim=1,name='mean1')(disp1)
-        alpha = Linear(input_dim=1,name='alpha',constraint=lambda z: tf.clip_by_value(z, 0, 1))(disp2)
+        enzyme_cells = Linear(input_dim=self.input_size,constraint=lambda z: tf.clip_by_value(z, 0.0, 1.0),name='enzyme_cells')(self.input_layer)
+        mean1 = Linear(input_dim=self.hidden_size[2],name='mean1')(self.decoder_output)
+        alpha =  Linear(input_dim=self.hidden_size[2],name='alpha')(self.decoder_output)
+        disp1 = ConstantDispersionLayer(name='dispersion1')
+        mean1 = disp1(mean1)
         mean2 = mean1*alpha
-        output = ColwiseMultLayer([pi, enzyme, self.sf_layer])
-        output = SliceLayer(0, name='slice')([output, mean1, mean2, disp1, disp2])
+        disp2 = ConstantDispersionLayer(name='dispersion2')
+        mean2 = disp2(mean2)
+        output = ColwiseMultLayer([pi, self.sf_layer])
+        output = SliceLayer(0, name='slice')([output, enzyme_cells, mean1, mean2])
 
-        combnb = CombNBLossSimpleExtra(enzyme=enzyme, mean1=mean1, mean2=mean2, theta1=disp1, theta2=disp2, debug=self.debug, scale_factor=self.sf_layer)
+        combnb = CombNBLossSimpleExtra(enzyme_cells=enzyme_cells, mean1=mean1, mean2=mean2, theta1=disp1.theta_exp, theta2=disp2.theta_exp, debug=self.debug, scale_factor=self.sf_layer)
         self.loss = combnb.loss
         self.extra_models['pi'] = Model(inputs=self.input_layer, outputs=pi)
-        self.extra_models['enzyme'] = Model(inputs=self.input_layer, outputs=enzyme)
-        self.extra_models['mean1'] = Model(inputs=self.input_layer, outputs=mean1)
-        self.extra_models['mean2'] = Model(inputs=self.input_layer, outputs=mean2)
+        #self.extra_models['enzyme_cells'] = Model(inputs=self.input_layer, outputs=enzyme_cells)
+#        self.extra_models['mean1'] = Model(inputs=self.input_layer, outputs=mean1)
+#        self.extra_models['mean2'] = Model(inputs=self.input_layer, outputs=mean2)
 #        self.extra_models['mean1_norm'] = Model(inputs=self.input_layer, outputs=mean1)
 #        self.extra_models['alpha'] = Model(inputs=self.input_layer, outputs=alpha)
         self.extra_models['decoded'] = Model(inputs=self.input_layer, outputs=self.decoder_output)
@@ -1108,9 +1116,9 @@ class CombNBExtraParameters(Autoencoder):
 #            adata.obsm['X_meth_dispersion1'] = self.extra_models['dispersion1'].predict(adata.X)
 #            adata.obsm['X_meth_dispersion2'] = self.extra_models['dispersion2'].predict(adata.X)
             adata.obsm['X_meth_value']    = self.extra_models['pi'].predict(adata.X)
-            adata.obsm['X_enzyme_function']    = self.extra_models['enzyme'].predict(adata.X)
-            adata.obsm['mean1_norm']    = self.extra_models['mean1'].predict(adata.X)
-            adata.obsm['mean2_norm']    = self.extra_models['mean2'].predict(adata.X)
+#            adata.obsm['X_enzyme_function']    = self.extra_models['enzyme_cells'].predict(adata.X)
+#            adata.obsm['mean1_norm']    = self.extra_models['mean1'].predict(adata.X)
+#            adata.obsm['mean2_norm']    = self.extra_models['mean2'].predict(adata.X)
 #            adata.obsm['alpha']    = self.extra_models['alpha'].predict(adata.X)
 
         # warning! this may overwrite adata.X
